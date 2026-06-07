@@ -1,44 +1,44 @@
 # Persistent-Homology-in-CDMX-health-services
 
-### Como usar la API
+### How to use the API
 
-Dado que el análisis topológico de redes urbanas o espaciales requiere conocer la "distancia" real (ya sea física en metros o temporal en segundos) entre miles de nodos, el uso de distancias euclidianas directas resulta insuficiente. 
+Given that the topological analysis of urban or spatial networks requires knowing the actual "distance" (whether physical in meters or temporal in seconds) between thousands of nodes, the use of direct Euclidean distances is insufficient. 
 
-Para resolver esto y sentar las bases de los grafos topológicos, se implementó un motor de enrutamiento local utilizando **Open Source Routing Machine (OSRM)**. Este anexo documenta el proceso paso a paso para asegurar la **reproducibilidad total** de los datos obtenidos.
+To solve this and establish the foundations of the topological graphs, a local routing engine was implemented using **Open Source Routing Machine (OSRM)**. This appendix documents the step-by-step process to ensure the **total reproducibility** of the obtained data.
 
-#### Infraestructura y Requisitos Previos
+#### Infrastructure and Prerequisites
 
-Para calcular matrices asimétricas masivas (ej. 4000x4000 nodos, generando 16 millones de aristas vehiculares) sin depender de APIs de terceros ni sufrir bloqueos por límite de peticiones, se configuró un entorno local contenerizado usando .
+To calculate massive asymmetric matrices (e.g., 4000x4000 nodes, generating 16 million vehicular edges) without relying on third-party APIs or suffering blocks due to request limits, a containerized local environment was configured using .
 
-* **Motor:** Docker Desktop.
-* **Lenguaje base:** Python 3.8+ (Librerías: `requests`, `pandas`, `polyline`).
-* **Configuración Crítica de Memoria (WSL2 en Windows):**
-  El procesamiento del grafo a nivel país requiere gestionar cargas de memoria masivas. Se implementó un límite duro en el archivo `.wslconfig` del sistema *host* para evitar desbordamientos de memoria (OOM kills):
+* **Engine:** Docker Desktop.
+* **Base language:** Python 3.8+ (Libraries: `requests`, `pandas`, `polyline`).
+* **Critical Memory Configuration (WSL2 on Windows):**
+  Processing the country-level graph requires managing massive memory loads. A hard limit was implemented in the `.wslconfig` file of the *host* system to prevent memory overflows (OOM kills):
   ```ini
   [wsl2]
   memory=6GB
   swap=12GB
   ```
 
-#### Construcción del Espacio Métrico (Grafo de OSRM)
+#### Construction of the Metric Space (OSRM Graph)
 
-La obtención de las ponderaciones de las aristas (tiempos y distancias) requirió procesar la red de calles cruda hacia un formato de jerarquías de contracción (Contraction Hierarchies).
+Obtaining the edge weights (times and distances) required processing the raw street network into a Contraction Hierarchies format.
 
-Se descargó el volcado cartográfico de OpenStreetMap en formato `.osm.pbf` de la región de estudio (México) mediante el repositorio público de [Geofabrik](https://download.geofabrik.de), el cuál se guardó en la raiz del disco en una carpeta llamada osrm_data.
+The OpenStreetMap cartographic dump in `.osm.pbf` format for the study region (Mexico) was downloaded through the public [Geofabrik](https://download.geofabrik.de) repository, which was saved at the root of the disk in a folder named osrm_data.
 
-Se extrajo la red vial utilizando el perfil de automóvil, traduciendo los nodos crudos a un grafo dirigido:
+The road network was extracted using the car profile, translating the raw nodes into a directed graph:
 ```bash
 docker run -t -v "C:\osrm_data:/data" osrm/osrm-backend osrm-extract -p /opt/car.lua /data/region-estudio.osm.pbf
 ```
 
-Para permitir el cálculo matricial en tiempos de orden logarítmico, se calcularon las jerarquías de rutas:
+To allow matrix calculation in logarithmic time, the route hierarchies were calculated:
 ```bash
 docker run -t -v "C:\osrm_data:/data" osrm/osrm-backend osrm-contract /data/region-estudio.osrm
 ```
 
-Se desplegó el servidor local de OSRM modificando la restricción nativa de parámetros (`--max-table-size 8000`) para permitir consultas matriciales masivas que servirían de insumo para el TDA:
+The local OSRM server was deployed by modifying the native parameter restriction (`--max-table-size 8000`) to allow massive matrix queries that would serve as input for the TDA:
 ```bash
 docker run -t -i -p 5000:5000 -v "C:\osrm_data:/data" osrm/osrm-backend osrm-routed --max-table-size 8000 /data/region-estudio.osrm
 ```
 
-Ya que se tiene activo el servidor se pueden usar consultas se puede usar la API de OSRM con onormalidad cambiando el servidor publico por el local y con el único limitante tu velocidad de procesamiento local de tu computadora, por lo que se puede realizar sin necesidad de conexión a internet.  Un ejemplo de ello se puede encontrar en el archivo `testAPI.py`
+Once the server is active, you can use the OSRM API queries normally by changing the public server to the local one, with the only limitation being the local processing speed of your computer, meaning it can be done without an internet connection. An example of this can be found in the `testAPI.py` file.
