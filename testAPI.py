@@ -1,52 +1,76 @@
+import pandas as pd 
+import folium
 import requests
+import polyline
+import urllib.parse
 
-points = [(-99.16151944, 19.29129336), (-99.13772284, 19.27673891), (-99.11550311, 19.25168289)]
+#Cargando informacion
+data = pd.read_csv("denue_inegi_62_.csv", encoding="latin-1")
+
+# --- DATA CLEANING
+
+#Usando data de ciudad de mexico
+filter_data = data[data["cve_ent"].isin([9])]
+
+#Usando solo los servicios de atencion primaria/inmediata
+codigos = [
+    621111, 621112, 621115, 621116,
+    621491, 621492, 622111, 622112
+]
+df = filter_data[filter_data['codigo_act'].isin(codigos)]
 
 
-coordinates = ""
+# -- LOCAL API CONSULT (Need the preconfiguration of orsm in docker)
 
-for i, p in enumerate(points):
-    coordinates += str(p[0])+","+str(p[1])
-    if(i != len(points)-1):
-        coordinates+=";"
+lat_lon_points = df[['latitud', 'longitud']].values.tolist()
+lista_ids = df['id'].tolist()
 
-print(coordinates)
+# Comprimir las coordenadas usando polyline
+encoded_string = polyline.encode(lat_lon_points)
 
-url = f"http://router.project-osrm.org/table/v1/driving/{coordinates}?annotations=distance,duration"
+safe_polyline = urllib.parse.quote(encoded_string)
 
+# --- Petición POST con Form-Data ---
+url = f"http://localhost:5000/table/v1/driving/polyline({safe_polyline})"
+
+# Los parámetros se envían como un diccionario de formulario
+params = {
+    "annotations": "duration,distance"
+}
 
 try:
-    response = requests.get(url)
+    # CLAVE: Usar 'data=payload' hace que Requests envíe la petición como form-urlencoded
+    response = requests.get(url, params=params)
     response.raise_for_status()
-
+    
     data = response.json()
-
-
-    if(data.get("code") == 'Ok'):
-        print(data)
-
-        durations = data.get("durations", [])
-        distances = data.get("distances", [])
-
-        for i in range(len(points)):
-            for j in range(len(points)):
-                if i != j:
-                    time_sec = durations[i][j]
-                    dist_met = distances[i][j]
-                    print(f"Time from Point {i} to Point {j}: {time_sec / 60:.2f} minutes")
-                    print(f"Distance from Point {i} to Point {j}: {dist_met / 1000:.2f} km")
-
-        #seg = data["routes"][0]["duration"]
-        #meters = data["routes"][0]["distance"]
-
-        #duracion_minutos = seg / 60
-        #distancia_km = meters / 1000
+    
+    # --- 4. Extraer matrices y asignar tus IDs ---
+    if "durations" in data and "distances" in data:
+        print("Matriz calculada con éxito. Procesando DataFrames...")
         
-        #print(f"Travel time: {duracion_minutos:.2f} minutes")
-        #print(f"Total distance: {distancia_km:.2f} km")
+        # Mapeamos los IDs a las filas y columnas automáticamente
+        df_tiempos_matriz = pd.DataFrame(data["durations"], index=lista_ids, columns=lista_ids)
+        df_distancias_matriz = pd.DataFrame(data["distances"], index=lista_ids, columns=lista_ids)
+        
+        # --- 5. Transformar a tabla estructurada (Formato Largo) ---
+        df_tiempos_long = df_tiempos_matriz.reset_index().melt(
+            id_vars='index', var_name='id_destino', value_name='tiempo_segundos'
+        ).rename(columns={'index': 'id_origen'})
+        
+        df_distancias_long = df_distancias_matriz.reset_index().melt(
+            id_vars='index', var_name='id_destino', value_name='distancia_metros'
+        ).rename(columns={'index': 'id_origen'})
+        
+        # Unimos tiempos y distancias en una sola tabla
+        df_final = pd.merge(df_tiempos_long, df_distancias_long, on=['id_origen', 'id_destino'])
+        
+        # --- 6. Guardar ---
+        df_final.to_csv("matriz_origen_destino.csv", index=False)
+        print(f"Archivo guardado exitosamente con {len(df_final)} filas.")
+        
     else:
-        print(f"API ERROR: {data.get('message', 'Desconocido')}")
+        print("Error: OSRM no devolvió las claves esperadas.")
 
 except requests.exceptions.RequestException as e:
-    print(f"Connection error: {e}")
-
+    print(f"Error de conexión: {e}")
