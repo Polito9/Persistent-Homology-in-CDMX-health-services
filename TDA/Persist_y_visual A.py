@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 from matplotlib.collections import LineCollection
 from ripser import ripser
+from scipy.sparse.csgraph import minimum_spanning_tree, connected_components
 
 archivo_crudo = Path('matriz_origen_destino.csv') 
 archivo_ponderado = Path('matriz_tiempos_ponderada_simetrica.csv')
@@ -30,8 +31,9 @@ else:
     df_asimetrica = df_raw.pivot(index='id_origen', columns='id_destino', values='tiempo_minutos')
     df_asimetrica = df_asimetrica.reindex(index=nodos_totales, columns=nodos_totales)
     
-    #Llenamos vacíos con infinito y extraemos una copia modificable (evita el read-only error) (gemini)
-    asym_mat = df_asimetrica.fillna(np.inf).to_numpy(copy=True)
+    # Por una penalización finita muy alta:
+    penalizacion_desconexion = 9999.0 
+    asym_mat = df_asimetrica.fillna(penalizacion_desconexion).to_numpy(copy=True)
     
     #Modificamos la diagonal con 0 de forma segura
     np.fill_diagonal(asym_mat, 0)
@@ -95,7 +97,7 @@ def filtrar_por_desviacion_con_indices(datos, desviaciones=1.0):
     
     return significativos, ruido, umbral, indices_significativos
 
-num_std = 1.0 
+num_std = 2.0 
 h0_sig, h0_ruido, umbral_h0, _ = filtrar_por_desviacion_con_indices(h0_data, num_std)
 h1_sig, h1_ruido, umbral_h1, indices_h1_sig = filtrar_por_desviacion_con_indices(h1_data, num_std)
 
@@ -135,10 +137,68 @@ print(f"H1 (Huecos/Ciclos) Significativos: {len(h1_sig)}")
 print("\n--- NODOS ASOCIADOS A HUECOS H1 ---")
 # Imprimimos la tabla formateada para que sea legible en consola
 if not df_tabla_h1.empty:
-    print(df_tabla_h1.to_string(index=False, justify='center'))
+    print("df_tabla_h1.to_string(index=False, justify='center')")
+    print(df_tabla_h1.info)
 else:
     print("No se encontraron ciclos H1 significativos con el umbral actual.")
+# --- GENERACIÓN DE TABLA DE CLÚSTERES H0 (Top 5 Persistencia) ---
+# La filtración H0 es equivalente a un Árbol de Expansión Mínima (MST).
+# Calculamos el MST usando la matriz de tiempos.
+mst = minimum_spanning_tree(matrix_para_tda).toarray()
+mst_simetrico = np.maximum(mst, mst.T) # Simetrizar para poder recorrerlo sin dirección
 
+# Extraer todas las aristas (fusiones) y sus pesos (tiempo en que se conectan / mueren)
+filas, columnas = np.where(np.triu(mst_simetrico) > 0)
+pesos = mst_simetrico[filas, columnas]
+
+# Ordenar las aristas de mayor a menor peso (las últimas 5 en conectarse son el Top 5)
+indices_ordenados = np.argsort(pesos)[::-1]
+
+tabla_h0 = []
+
+for i in range(min(5, len(indices_ordenados))):
+    idx_arista = indices_ordenados[i]
+    u = filas[idx_arista]
+    v = columnas[idx_arista]
+    peso_muerte = pesos[idx_arista]
+    
+    # Si eliminamos esta arista crítica, el árbol se divide en los 
+    # dos clústeres aislados que estaban a punto de fusionarse.
+    mst_temp = mst_simetrico.copy()
+    mst_temp[u, v] = 0
+    mst_temp[v, u] = 0
+    
+    n_comp, labels = connected_components(mst_temp, directed=False)
+    
+    # Encontramos todos los nodos que pertenecen al mismo grupo que 'u' y 'v'
+    cluster_u = np.where(labels == labels[u])[0]
+    cluster_v = np.where(labels == labels[v])[0]
+    
+    # Convención topológica: el clúster más pequeño "muere" y se asimila al más grande
+    if len(cluster_u) <= len(cluster_v):
+        cluster_muere = cluster_u
+    else:
+        cluster_muere = cluster_v
+
+    # Convertir índices matriciales a los IDs originales de tu archivo CSV
+    try:
+        nombres_muere = [nodos_totales[idx] for idx in cluster_muere]
+    except NameError:
+        nombres_muere = cluster_muere.tolist()
+        
+    tabla_h0.append({
+        "Ranking_H0": f"Top {i + 1}",
+        "Tiempo_Fusión_min": round(peso_muerte, 2),
+        "Tamaño_Clúster": len(cluster_muere),
+        "Nodos_del_Clúster": str(nombres_muere)
+    })
+
+df_tabla_h0 = pd.DataFrame(tabla_h0)
+print("\n--- TOP 5 CLÚSTERES H0 CON MAYOR PERSISTENCIA ---")
+if not df_tabla_h0.empty:
+    print(df_tabla_h0.info)
+else:
+    print("No se encontraron clústeres.")
 
 # LÍMITES DE VISTA
 if len(h1_data) > 0:
