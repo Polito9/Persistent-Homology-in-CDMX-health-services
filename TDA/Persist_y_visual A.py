@@ -141,64 +141,85 @@ if not df_tabla_h1.empty:
     print(df_tabla_h1.info)
 else:
     print("No se encontraron ciclos H1 significativos con el umbral actual.")
-# --- GENERACIÓN DE TABLA DE CLÚSTERES H0 (Top 5 Persistencia) ---
-# La filtración H0 es equivalente a un Árbol de Expansión Mínima (MST).
-# Calculamos el MST usando la matriz de tiempos.
-mst = minimum_spanning_tree(matrix_para_tda).toarray()
-mst_simetrico = np.maximum(mst, mst.T) # Simetrizar para poder recorrerlo sin dirección
+# --- ANÁLISIS DE MESETAS DE ESTABILIDAD TOPOLÓGICA (ESTADOS H0) ---
 
-# Extraer todas las aristas (fusiones) y sus pesos (tiempo en que se conectan / mueren)
-filas, columnas = np.where(np.triu(mst_simetrico) > 0)
-pesos = mst_simetrico[filas, columnas]
+# 1. Obtener todos los tiempos exactos donde ocurre una fusión (muerte de H0)
+tiempos_muerte = h0_data[np.isfinite(h0_data[:, 1]), 1]
 
-# Ordenar las aristas de mayor a menor peso (las últimas 5 en conectarse son el Top 5)
-indices_ordenados = np.argsort(pesos)[::-1]
+# Añadimos el tiempo 0 (inicio absoluto) y ordenamos. Eliminamos duplicados por si 
+# múltiples fusiones ocurren exactamente en el mismo milisegundo.
+tiempos_eventos = np.unique(np.concatenate(([0.0], np.sort(tiempos_muerte))))
 
-tabla_h0 = []
+# 2. Calcular la duración de cada estado (Delta t)
+# Cada elemento es el tiempo que el sistema pasó con un número constante de componentes
+duraciones_estados = np.diff(tiempos_eventos)
 
-for i in range(min(5, len(indices_ordenados))):
-    idx_arista = indices_ordenados[i]
-    u = filas[idx_arista]
-    v = columnas[idx_arista]
-    peso_muerte = pesos[idx_arista]
+# 3. Encontrar los Top 5 estados que duraron más tiempo sin cambiar
+top_n_estados = 5
+# argsort ordena de menor a mayor, [::-1] lo invierte, [:5] toma los primeros 5
+indices_mesetas = np.argsort(duraciones_estados)[::-1][:top_n_estados]
+
+print("\n" + "="*70)
+print(" ANÁLISIS DE MESETAS: ESTADOS TOPOLÓGICOS MÁS ESTABLES (H0)")
+print("="*70)
+
+# Lista maestra que guardará los DataFrames de cada estado (tu "tabla de tablas")
+lista_de_tablas_por_estado = []
+
+for rank, idx in enumerate(indices_mesetas):
+    t_inicio = tiempos_eventos[idx]
+    t_fin = tiempos_eventos[idx + 1]
+    duracion = duraciones_estados[idx]
     
-    # Si eliminamos esta arista crítica, el árbol se divide en los 
-    # dos clústeres aislados que estaban a punto de fusionarse.
-    mst_temp = mst_simetrico.copy()
-    mst_temp[u, v] = 0
-    mst_temp[v, u] = 0
+    # Para saber qué nodos están conectados en este estado, tomamos un tiempo (epsilon) 
+    # que esté justo en medio de la meseta temporal.
+    epsilon_meseta = t_inicio + (duracion / 2.0)
     
-    n_comp, labels = connected_components(mst_temp, directed=False)
+    # Construimos la red de conexiones activa en ese momento específico
+    matriz_estado_actual = (matrix_para_tda <= epsilon_meseta)
     
-    # Encontramos todos los nodos que pertenecen al mismo grupo que 'u' y 'v'
-    cluster_u = np.where(labels == labels[u])[0]
-    cluster_v = np.where(labels == labels[v])[0]
+    # Calculamos los componentes conectados en ese instante
+    n_componentes, etiquetas_nodos = connected_components(matriz_estado_actual, directed=False)
     
-    # Convención topológica: el clúster más pequeño "muere" y se asimila al más grande
-    if len(cluster_u) <= len(cluster_v):
-        cluster_muere = cluster_u
-    else:
-        cluster_muere = cluster_v
-
-    # Convertir índices matriciales a los IDs originales de tu archivo CSV
-    try:
-        nombres_muere = [nodos_totales[idx] for idx in cluster_muere]
-    except NameError:
-        nombres_muere = cluster_muere.tolist()
+    print(f"\n[ TOP {rank + 1} ESTADO MÁS ESTABLE ]")
+    print(f" • Intervalo de tiempo: {t_inicio:.2f} a {t_fin:.2f} minutos")
+    print(f" • Persistencia del estado: {duracion:.2f} minutos continuos")
+    print(f" • El mapa se mantuvo congelado en exactamente: {n_componentes} componentes distintos")
+    
+    # Construimos la tabla interna para este estado específico
+    datos_estado = []
+    for comp_id in range(n_componentes):
+        # Encontrar qué índices numéricos pertenecen a este grupo
+        indices_grupo = np.where(etiquetas_nodos == comp_id)[0]
         
-    tabla_h0.append({
-        "Ranking_H0": f"Top {i + 1}",
-        "Tiempo_Fusión_min": round(peso_muerte, 2),
-        "Tamaño_Clúster": len(cluster_muere),
-        "Nodos_del_Clúster": str(nombres_muere)
+        # Mapear los índices numéricos a los nombres/IDs reales de los nodos
+        try:
+            nombres_grupo = [nodos_totales[i] for i in indices_grupo]
+        except NameError:
+            nombres_grupo = indices_grupo.tolist()
+            
+        datos_estado.append({
+            "ID_Componente": comp_id,
+            "Tamaño": len(nombres_grupo),
+            "Nodos_en_este_Componente": str(nombres_grupo)
+        })
+        
+    df_estado = pd.DataFrame(datos_estado)
+    # Ordenar la tabla para ver los clústeres más grandes primero
+    df_estado = df_estado.sort_values(by="Tamaño", ascending=False).reset_index(drop=True)
+    
+    # Guardamos la tabla en nuestra lista maestra
+    lista_de_tablas_por_estado.append({
+        "info_estado": f"Top {rank+1}: {duracion:.2f} min ({n_componentes} comp)",
+        "dataframe": df_estado
     })
-
-df_tabla_h0 = pd.DataFrame(tabla_h0)
-print("\n--- TOP 5 CLÚSTERES H0 CON MAYOR PERSISTENCIA ---")
-if not df_tabla_h0.empty:
-    print(df_tabla_h0.info)
-else:
-    print("No se encontraron clústeres.")
+    
+    # Imprimimos la tabla en la consola. 
+    # Limitamos visualmente a los primeros 10 grupos para no inundar la terminal si hay muchos nodos aislados
+    print(df_estado.head(10).to_string(index=False))
+    if n_componentes > 10:
+        print(f"  ... y {n_componentes - 10} componentes aislados más (tamaño 1).")
+    print("-" * 70)
 
 # LÍMITES DE VISTA
 if len(h1_data) > 0:
