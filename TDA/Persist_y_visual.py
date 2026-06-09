@@ -31,7 +31,7 @@ else:
     df_asimetrica = df_asimetrica.reindex(index=nodos_totales, columns=nodos_totales)
     
     #Llenamos vacíos con infinito y extraemos una copia modificable (evita el read-only error) (gemini)
-    asym_mat = df_asimetrica.fillna(np.inf).to_numpy(copy=True)
+    asym_mat = df_asimetrica.to_numpy(copy=True)
     
     #Modificamos la diagonal con 0 de forma segura
     np.fill_diagonal(asym_mat, 0)
