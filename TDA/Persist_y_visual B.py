@@ -20,7 +20,6 @@ if archivo_ponderado.is_file():
     n = df_ponderada.shape[0]
     nodos_totales = df_ponderada.index.tolist()
 else:
-    # (Este bloque se mantiene igual, no necesita cambios)
     df_raw = pd.read_csv(archivo_crudo)
     df_raw['tiempo_minutos'] = df_raw['tiempo_segundos'] / 60.0
     nodos_totales = sorted(list(set(df_raw['id_origen']).union(set(df_raw['id_destino']))))
@@ -145,39 +144,53 @@ fecha_base = datetime.datetime(2024, 1, 1, 0, 0)
 tiempos_frames = [(fecha_base + datetime.timedelta(minutes=i)).strftime('%Y-%m-%dT%H:%M:%S') for i in range(num_frames)]
 features = []
 
-# 2. FILTRAR Y MUESTREAR EL ANDAMIAJE (Líneas grises)
+# 2. FILTRAR Y MUESTREAR EL ANDAMIAJE (Líneas grises agrupadas por frame)
 print("Generando datos temporales para el andamiaje base...")
 umbral_maximo = limite_vista
 i_indices, j_indices = np.where((matrix_para_tda > 0) & (matrix_para_tda <= umbral_maximo))
 mask = i_indices < j_indices
 i_indices = i_indices[mask]
 j_indices = j_indices[mask]
-# Un límite más alto si es necesario, pero 5k es seguro para el navegador
+
 max_lineas = 5000 
 if len(i_indices) > max_lineas:
     indices_aleatorios = np.random.choice(len(i_indices), max_lineas, replace=False)
     i_indices = i_indices[indices_aleatorios]
     j_indices = j_indices[indices_aleatorios]
+
+# Agrupamos todas las líneas activas por cada instante de tiempo
+lineas_por_frame = {t: [] for t in tiempos_frames}
+
 for idx_nodo1, idx_nodo2 in zip(i_indices, j_indices):
     distancia = matrix_para_tda[idx_nodo1, idx_nodo2]
     frame_nac = np.searchsorted(2 * valores_epsilon, distancia) # Escala 2*epsilon para andamiaje
+    
     if frame_nac < num_frames:
-        tiempos_activos = tiempos_frames[frame_nac:]
         lon1, lat1 = points_geo[idx_nodo1]
         lon2, lat2 = points_geo[idx_nodo2]
+        segmento = [[lon1, lat1], [lon2, lat2]]
+        
+        # La línea existe desde su nacimiento hasta el último frame
+        for frame_idx in range(frame_nac, num_frames):
+            t_str = tiempos_frames[frame_idx]
+            lineas_por_frame[t_str].append(segmento)
+
+# Convertir a MultiLineString para optimizar el rendimiento del navegador
+for t_str, segmentos in lineas_por_frame.items():
+    if segmentos: # Solo agregamos si hay líneas en este frame
         features.append({
             'type': 'Feature',
             'geometry': {
-                'type': 'LineString',
-                'coordinates': [[lon1, lat1], [lon2, lat2]]
+                'type': 'MultiLineString',
+                'coordinates': segmentos
             },
             'properties': {
-                'times': tiempos_activos,
-                'style': {'color': "#3a3a3a", 'weight': 1, 'opacity': 0.25} # Más transparencia
+                'time': t_str,
+                'style': {'color': "#3a3a3a", 'weight': 1, 'opacity': 0.25}
             }
         })
 
-# --- FUNCIÓN DE DIJKSTRA (Copiar si no la tienes) ---
+
 def obtener_ciclo_representativo(matrix, cociclo, nacimiento):
     """
     Transforma un 1-cociclo (telaraña) en un 1-ciclo (polígono Dijkstra)
@@ -228,6 +241,7 @@ def obtener_ciclo_representativo(matrix, cociclo, nacimiento):
         
     return aristas_ciclo
 
+
 # --- 3. AGREGAR LOS HUECOS H1 SIGNIFICATIVOS (Polígonos Rojos Rellenos) ---
 print("Generando datos temporales para los huecos H1 (Polígonos rellenados)...")
 for i, h1_punto in enumerate(h1_sig):
@@ -267,32 +281,33 @@ for i, h1_punto in enumerate(h1_sig):
         # ¡IMPORTANTE: GeoJSON requiere cerrar el polígono (primer punto == último punto)!
         coordenadas_poligono.append([points_geo[lista_nodos_ordenada[0]][0], points_geo[lista_nodos_ordenada[0]][1]])
 
-        # Crear una única Feature de tipo POLYGON para todo el hueco
-        features.append({
-            'type': 'Feature',
-            'geometry': {
-                'type': 'Polygon', # <--- CAMBIADO: De LineString a Polygon
-                'coordinates': [coordenadas_poligono] # <--- Lista de anillos, el anillo exterior es [0]
-            },
-            'properties': {
-                'times': tiempos_activos_h1,
-                # --- ESTILO ACTUALIZADO CON RELLENO ---
-                'style': {
-                    'color': "#ff0000",       # Color del borde: Rojo brillante
-                    'weight': 3, 
-                    'opacity': 0.8,
-                    'dashArray': '6, 6',       # Línea punteada
-                    'fillColor': "#ffb3b3",   # <--- NUEVO: Color de relleno Rojo claro
-                    'fillOpacity': 0.3         # <--- NUEVO: Opacidad de relleno baja (0.3)
+        # Crear una única Feature de tipo POLYGON iterando sobre cada frame de vida
+        for t in tiempos_activos_h1:
+            features.append({
+                'type': 'Feature',
+                'geometry': {
+                    'type': 'Polygon',
+                    'coordinates': [coordenadas_poligono]
+                },
+                'properties': {
+                    'time': t, 
+                    'style': {
+                        'color': "#ff0000",       
+                        'weight': 3, 
+                        'opacity': 0.8,
+                        'dashArray': '6, 6',       
+                        'fillColor': "#ffb3b3",   
+                        'fillOpacity': 0.3         
+                    }
                 }
-            }
-        })
+            })
 
 # 4. CONSTRUIR EL REPRODUCTOR Y EXPORTAR
 print("Ensamblando el reproductor interactivo...")
 TimestampedGeoJson(
     {'type': 'FeatureCollection', 'features': features},
     period='PT1M',
+    duration='PT1M', # <--- NUEVO: Fuerza la eliminación del objeto transcurrido 1 frame temporal
     add_last_point=False,
     auto_play=True,
     loop=False,
