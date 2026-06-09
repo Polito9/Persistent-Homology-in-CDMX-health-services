@@ -9,6 +9,7 @@ from scipy.sparse.csgraph import minimum_spanning_tree, connected_components
 
 archivo_crudo = Path('matriz_origen_destino.csv') 
 archivo_ponderado = Path('matriz_tiempos_ponderada_simetrica.csv')
+base_path = Path('ciclos_h1_significativos.csv')
 
 if archivo_ponderado.is_file():
     # si ya tenemos matriz la matiz simétrica, no calcularla
@@ -17,6 +18,10 @@ if archivo_ponderado.is_file():
     df_ponderada.columns = df_ponderada.columns.astype(type(df_ponderada.index[0]))
     matrix_para_tda = df_ponderada.values
     n = df_ponderada.shape[0]
+    
+    # --- AQUÍ ESTÁ LA SOLUCIÓN ---
+    # Recuperamos los nombres de los nodos directamente del índice del archivo guardado
+    nodos_totales = df_ponderada.index.tolist()
 else:
     #en caso de ser la primera vez, leemos el archivo de datos original
     df_raw = pd.read_csv(archivo_crudo)
@@ -96,51 +101,79 @@ def filtrar_por_desviacion_con_indices(datos, desviaciones=1.0):
     indices_significativos = np.where(es_significativo)[0]
     
     return significativos, ruido, umbral, indices_significativos
+# Definimos las desviaciones estándar a iterar
+desviaciones = [1.0, 2.0]
 
-num_std = 2.0 
-h0_sig, h0_ruido, umbral_h0, _ = filtrar_por_desviacion_con_indices(h0_data, num_std)
-h1_sig, h1_ruido, umbral_h1, indices_h1_sig = filtrar_por_desviacion_con_indices(h1_data, num_std)
+# Opcional: Diccionario para guardar los cociclos de ambas desviaciones 
+# por si los necesitas para la animación posterior
+cocycles_sig_dict = {} 
 
-# --- GENERACIÓN DE TABLA DE NODOS H1 ---
-tabla_h1 = []
-cocycles_sig = [] # Guardaremos solo los cociclos de los H1 importantes para la animación
+for num_std in desviaciones:
+    print(f"\n{'='*50}")
+    print(f" PROCESANDO PARA {num_std} DESVIACIONES ESTÁNDAR ")
+    print(f"{'='*50}")
+    
+    h0_sig, h0_ruido, umbral_h0, _ = filtrar_por_desviacion_con_indices(h0_data, num_std)
+    h1_sig, h1_ruido, umbral_h1, indices_h1_sig = filtrar_por_desviacion_con_indices(h1_data, num_std)
 
-for idx_local, idx_global in enumerate(indices_h1_sig):
-    nacimiento = h1_sig[idx_local, 0]
-    muerte = h1_sig[idx_local, 1]
+    # --- GENERACIÓN DE TABLA DE NODOS H1 ---
+    tabla_h1 = []
+    cocycles_sig = [] 
     
-    # Extraemos el cociclo representativo del H1
-    cociclo_actual = cocycles_h1_totales[idx_global]
-    cocycles_sig.append(cociclo_actual)
-    
-    # Extraer los índices únicos de los nodos involucrados (columnas 0 y 1 del cociclo)
-    nodos_indices = np.unique(cociclo_actual[:, :2].astype(int))
-    
-    # Convertimos los índices a los IDs reales si 'nodos_totales' existe, sino usamos el índice
-    try:
-        nombres_nodos = [nodos_totales[idx] for idx in nodos_indices]
-    except NameError:
-        nombres_nodos = nodos_indices.tolist()
+    for idx_local, idx_global in enumerate(indices_h1_sig):
+        nacimiento = h1_sig[idx_local, 0]
+        muerte = h1_sig[idx_local, 1]
         
-    tabla_h1.append({
-        "H1_ID": f"Hueco {idx_local + 1}",
-        "Nacimiento": round(nacimiento, 2),
-        "Muerte": round(muerte, 2),
-        "Persistencia": round(muerte - nacimiento, 2),
-        "Nodos_Formadores": str(nombres_nodos)
-    })
+        # Extraemos el cociclo representativo del H1
+        cociclo_actual = cocycles_h1_totales[idx_global]
+        cocycles_sig.append(cociclo_actual)
+        
+        # Extraer los índices únicos de los nodos involucrados
+        nodos_indices = np.unique(cociclo_actual[:, :2].astype(int))
+        
+        # Quitamos el try/except para forzar a que use tu lista de nombres reales.
+        # Si aquí te marca error, significa que 'nodos_totales' no existe en tu entorno
+        # o tiene un nombre de variable distinto.
+        nombres_nodos = [nodos_totales[idx] for idx in nodos_indices]
+            
+        tabla_h1.append({
+            # Modifiqué el ID para que use el índice global real en lugar de "Hueco X"
+            "H1_ID": f"Ciclo_ID_{idx_global}", 
+            "Nacimiento": round(nacimiento, 2),
+            "Muerte": round(muerte, 2),
+            "Persistencia": round(muerte - nacimiento, 2),
+            "Nodos_Formadores": str(nombres_nodos)
+        })
 
-df_tabla_h1 = pd.DataFrame(tabla_h1)
-print(f"\n--- ANÁLISIS DE PERSISTENCIA (>{num_std} std) ---")
-print(f"H0 (Componentes) Significativos: {len(h0_sig)}")
-print(f"H1 (Huecos/Ciclos) Significativos: {len(h1_sig)}")
-print("\n--- NODOS ASOCIADOS A HUECOS H1 ---")
-# Imprimimos la tabla formateada para que sea legible en consola
-if not df_tabla_h1.empty:
-    print("df_tabla_h1.to_string(index=False, justify='center')")
-    print(df_tabla_h1.info)
-else:
-    print("No se encontraron ciclos H1 significativos con el umbral actual.")
+    df_tabla_h1 = pd.DataFrame(tabla_h1)
+    
+    # --- CREACIÓN DE ARCHIVOS DINÁMICOS ---
+    # Genera nombres como 'ciclos_significativos_1.0_std.csv'
+    archivo_actual = base_path.with_name(f"{base_path.stem}_{num_std}_std.csv")
+    
+    if archivo_actual.is_file():
+        print(f"Archivo '{archivo_actual}' ya existe. Cargando tabla de ciclos H1...")
+    else:
+        if not df_tabla_h1.empty:
+            df_tabla_h1.to_csv(archivo_actual, index=False)
+            print(f"Tabla de ciclos H1 significativos guardada en '{archivo_actual}'.")
+        else:
+            print(f"No hay ciclos suficientes para generar el archivo '{archivo_actual}'.")
+            
+    # Guardamos los cociclos actuales en el diccionario usando num_std como llave
+    cocycles_sig_dict[num_std] = cocycles_sig
+
+    # --- IMPRESIÓN DE RESULTADOS ---
+    print(f"\n--- ANÁLISIS DE PERSISTENCIA (>{num_std} std) ---")
+    print(f"H0 (Componentes) Significativos: {len(h0_sig)}")
+    print(f"H1 (Huecos/Ciclos) Significativos: {len(h1_sig)}")
+    
+    print("\n--- NODOS ASOCIADOS A HUECOS H1 ---")
+    if not df_tabla_h1.empty:
+        # Se imprime la tabla directamente; .info es un método, aquí usamos to_string para formatear
+        print(df_tabla_h1.info)
+    else:
+        print("No se encontraron ciclos H1 significativos con el umbral actual.")
 # --- ANÁLISIS DE MESETAS DE ESTABILIDAD TOPOLÓGICA (ESTADOS H0) ---
 
 # 1. Obtener todos los tiempos exactos donde ocurre una fusión (muerte de H0)
@@ -216,9 +249,9 @@ for rank, idx in enumerate(indices_mesetas):
     
     # Imprimimos la tabla en la consola. 
     # Limitamos visualmente a los primeros 10 grupos para no inundar la terminal si hay muchos nodos aislados
-    print(df_estado.head(10).to_string(index=False))
-    if n_componentes > 10:
-        print(f"  ... y {n_componentes - 10} componentes aislados más (tamaño 1).")
+    print(df_estado.info)
+    #if n_componentes > 10:
+        #print(f"  ... y {n_componentes - 10} componentes aislados más (tamaño 1).")
     print("-" * 70)
 
 # LÍMITES DE VISTA
