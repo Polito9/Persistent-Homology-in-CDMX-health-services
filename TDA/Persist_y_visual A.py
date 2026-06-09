@@ -21,7 +21,6 @@ if archivo_ponderado.is_file():
     matrix_para_tda = df_ponderada.values
     n = df_ponderada.shape[0]
 
-
     nodos_totales = df_ponderada.index.tolist()
 else:
     #en caso de ser la primera vez, leemos el archivo de datos original
